@@ -8,7 +8,7 @@ export function resolveConfig(pc = {}) {
     userId: pc.userId || "everos-user",
     groupId: pc.groupId || "everos-group",
     topK: pc.topK ?? 5,
-    memoryTypes: pc.memoryTypes ?? ["episodic_memory", "profile", "agent_skill", "agent_case"],
+    memoryTypes: pc.memoryTypes ?? ["episodic_memory", "profile"],
     retrieveMethod: pc.retrieveMethod ?? "hybrid",
   };
 }

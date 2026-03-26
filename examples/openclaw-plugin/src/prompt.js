@@ -41,28 +41,50 @@ export function parseSearchResponse(raw) {
       };
     });
 
-  const traits = (raw.result.profiles ?? []).filter((p) => (p.score ?? 0) >= 0.1).map((p) => {
-    const label = p.category || p.trait_name || "";
-    let kind = p.item_type || "";
-    if (kind === "explicit_info") kind = "explicit";
-    else if (kind === "implicit_trait") kind = "implicit";
-    return {
-      text: label ? `[${label}] ${p.description || ""}` : (p.description || ""),
-      kind,
-    };
-  });
+  // Parse profile traits from either search-style or fetch-style responses.
+  // Search-style: profiles is array of {category, description, item_type, score}
+  // Fetch-style: profiles is array of ProfileModel with explicit_info[] and implicit_traits[]
+  const traits = [];
+  for (const p of raw.result.profiles ?? []) {
+    // Fetch-style ProfileModel: has explicit_info / implicit_traits arrays
+    if (p.explicit_info || p.implicit_traits) {
+      for (const info of p.explicit_info ?? []) {
+        const label = info.category || "";
+        const desc = info.description || "";
+        if (desc) traits.push({ text: label ? `[${label}] ${desc}` : desc, kind: "explicit" });
+      }
+      for (const trait of p.implicit_traits ?? []) {
+        const label = trait.category || trait.trait_name || "";
+        const desc = trait.description || "";
+        if (desc) traits.push({ text: label ? `[${label}] ${desc}` : desc, kind: "implicit" });
+      }
+    } else {
+      // Search-style: individual scored items
+      if ((p.score ?? 0) < 0.1) continue;
+      const label = p.category || p.trait_name || "";
+      let kind = p.item_type || "";
+      if (kind === "explicit_info") kind = "explicit";
+      else if (kind === "implicit_trait") kind = "implicit";
+      traits.push({
+        text: label ? `[${label}] ${p.description || ""}` : (p.description || ""),
+        kind,
+      });
+    }
+  }
 
-  // agent_case: top 1 by score (min 0.01)
-  const topCase = allMemories
-    .filter((m) => m.memory_type === "agent_case" && (m.score ?? 0) >= 0.01)
-    .sort((a, b) => (b.score ?? 0) - (a.score ?? 0))[0] || null;
+  // pending_messages: recent messages not yet extracted into memories
+  const pending = (raw.result.pending_messages ?? [])
+    .filter((m) => m.content)
+    .map((m) => {
+      const who = m.sender_name || m.sender || m.user_id || "";
+      const body = m.content || "";
+      return {
+        text: who ? `${who}: ${body}` : body,
+        timestamp: m.message_create_time ?? m.created_at ?? null,
+      };
+    });
 
-  // agent_skill: top 1 by score (min 0.01)
-  const topSkill = allMemories
-    .filter((m) => m.memory_type === "agent_skill" && (m.score ?? 0) >= 0.01)
-    .sort((a, b) => (b.score ?? 0) - (a.score ?? 0))[0] || null;
-
-  return { episodic, traits, case: topCase, skill: topSkill };
+  return { episodic, traits, pending, case: null, skill: null };
 }
 
 function oneLiner(text) {
@@ -125,11 +147,14 @@ export function buildMemoryPrompt(parsed, opts = {}) {
   const caseLines = caseBlock(parsed.case);
   const skillLines = skillBlock(parsed.skill);
 
-  if (!episodicLines.length && !traitLines.length && !caseLines.length && !skillLines.length) return "";
+  const pendingLines = (parsed.pending ?? []).map(factLine).filter(Boolean);
+
+  if (!episodicLines.length && !traitLines.length && !caseLines.length && !skillLines.length && !pendingLines.length) return "";
 
   const xmlBlock = [
     "<memory>",
     ...(episodicLines.length ? ["  <episodic>", ...episodicLines, "  </episodic>"] : []),
+    ...(pendingLines.length ? ["  <recent_context>", "  <!-- Recent conversation not yet consolidated into memory. -->", ...pendingLines, "  </recent_context>"] : []),
     ...(traitLines.length ? ["  <trait>", ...traitLines, "  </trait>"] : []),
     ...(caseLines.length ? ["  <!-- Similar past case. Use as reference if applicable to the current task. -->", ...caseLines] : []),
     ...(skillLines.length ? ["  <!-- Relevant skill. Use as reference if applicable to the current task. -->", ...skillLines] : []),

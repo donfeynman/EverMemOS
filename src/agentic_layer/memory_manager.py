@@ -479,6 +479,7 @@ class MemoryManager:
             else 'unknown'
         )
 
+        milvus_start = time.perf_counter()  # init early so except handler never fails
         try:
             # Get parameters from Request
             logger.debug(

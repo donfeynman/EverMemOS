@@ -53,9 +53,10 @@ export class ContextAssembler {
     /** @type {ParsedMemoryResponse} */
     const parsed = parseSearchResponse(result) || { episodic: [], traits: [], case: null, skill: null };
 
-    // Count total memories
+    // Count total memories (including pending messages)
     const memoryCount =
       (parsed.episodic?.length || 0) +
+      (parsed.pending?.length || 0) +
       (parsed.traits?.length || 0) +
       (parsed.case ? 1 : 0) +
       (parsed.skill ? 1 : 0);

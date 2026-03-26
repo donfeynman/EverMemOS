@@ -16,35 +16,57 @@ function messageId(idSeed, role, content) {
 export async function searchMemories(cfg, params, log = noop) {
   const { memory_types, ...baseParams } = params;
 
-  const episodicTypes = (memory_types ?? []).filter((t) => t === "episodic_memory" || t === "profile");
-  const caseTypes = (memory_types ?? []).filter((t) => t === "agent_case" || t === "agent_skill");
+  // Backend only supports these types in hybrid/vector search.
+  // "profile" is handled separately by the backend (fetched from MongoDB, not ES/Milvus).
+  // "agent_case" / "agent_skill" do not exist in the backend MemoryType enum.
+  const SEARCHABLE_TYPES = new Set(["episodic_memory", "foresight", "event_log"]);
 
-  const searches = [];
-  if (episodicTypes.length) searches.push({ label: "episodic+profile", types: episodicTypes });
-  if (caseTypes.length) searches.push({ label: "case+skill", types: caseTypes });
+  const searchTypes = (memory_types ?? []).filter((t) => SEARCHABLE_TYPES.has(t));
+  // profile is passed alongside a searchable type so the backend can attach it via its own path
+  const wantProfile = (memory_types ?? []).includes("profile");
 
-  const results = await Promise.all(
-    searches.map(async ({ label, types }) => {
-      const p = { ...baseParams, memory_types: types };
-      log.info(`${TAG} GET /api/v1/memories/search ${label}`, JSON.stringify(p));
-      const r = await request(cfg, "GET", "/api/v1/memories/search", p);
-      log.info(`${TAG} GET response ${label}`, JSON.stringify(r));
-      return r;
-    }),
-  );
+  if (!searchTypes.length && !wantProfile) {
+    return { status: "ok", result: { profiles: [], memories: [], pending_messages: [] } };
+  }
 
-  // merge into a single response in order: episodic/profile first, then case/skill
+  // Single search request with only valid searchable types.
+  // The backend's retrieve_mem always fetches pending_messages and (when profile is requested)
+  // attaches profile data automatically based on user_id/group_id.
+  const types = searchTypes.length ? searchTypes : ["episodic_memory"];
+  const p = { ...baseParams, memory_types: types };
+  log.info(`${TAG} GET /api/v1/memories/search`, JSON.stringify(p));
+  const searchResult = await request(cfg, "GET", "/api/v1/memories/search", p);
+  log.info(`${TAG} GET response`, JSON.stringify(searchResult));
+
+  // If profile was requested, fetch it separately via the fetch endpoint
+  let profiles = [];
+  if (wantProfile) {
+    try {
+      const profileParams = {
+        user_id: baseParams.user_id,
+        group_id: baseParams.group_id,
+        memory_type: "profile",
+        limit: 1,
+      };
+      log.info(`${TAG} GET /api/v1/memories (profile)`, JSON.stringify(profileParams));
+      const profileResult = await request(cfg, "GET", "/api/v1/memories", profileParams);
+      log.info(`${TAG} GET response (profile)`, JSON.stringify(profileResult));
+      if (profileResult?.result?.memories?.length) {
+        profiles = profileResult.result.memories;
+      }
+    } catch (err) {
+      log.warn(`${TAG} profile fetch failed: ${err.message}`);
+    }
+  }
+
   const merged = {
     status: "ok",
     result: {
-      profiles: [],
-      memories: [],
+      profiles,
+      memories: searchResult?.result?.memories ?? [],
+      pending_messages: searchResult?.result?.pending_messages ?? [],
     },
   };
-  for (const r of results) {
-    if (r?.result?.profiles?.length) merged.result.profiles.push(...r.result.profiles);
-    if (r?.result?.memories?.length) merged.result.memories.push(...r.result.memories);
-  }
   return merged;
 }
 
